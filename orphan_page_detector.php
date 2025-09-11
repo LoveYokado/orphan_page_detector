@@ -355,22 +355,42 @@ function opd_get_linked_urls( $redirect_key = 'redirect_url' ) {
  * @return string The fully qualified, absolute URL.
  */
 function opd_relative_to_absolute_url( $url, $base_url ) {
+	// If it's already an absolute URL, return it.
 	if ( filter_var( $url, FILTER_VALIDATE_URL ) ) {
-		return $url; // It's already an absolute URL.
+		return $url;
 	}
 
+	// Protocol-relative URL (e.g., //example.com/path).
 	if ( strpos( $url, '//' ) === 0 ) {
-		// Protocol-relative URL (e.g., //example.com/path).
 		return parse_url( $base_url, PHP_URL_SCHEME ) . ':' . $url;
 	}
 
+	// Root-relative URL (e.g., /path/to/page).
 	if ( strpos( $url, '/' ) === 0 ) {
-		// Root-relative URL (e.g., /path/to/page).
 		return get_home_url( null, $url );
 	}
 
-	// Path-relative URL (e.g., path/to/page or ../path).
-	return trailingslashit( dirname( $base_url ) ) . $url;
+	// Handle path-relative URLs (e.g., 'page.html', '../page.html').
+	$base_parts = parse_url( $base_url );
+	$base_path = isset( $base_parts['path'] ) ? $base_parts['path'] : '/';
+
+	// If the base URL is a file, get its directory.
+	if ( pathinfo( $base_path, PATHINFO_EXTENSION ) ) {
+		$base_path = dirname( $base_path );
+	}
+	// Ensure the base path has a trailing slash.
+	$base_path = trailingslashit( $base_path );
+
+	$absolute_path = $base_path . $url;
+
+	// Resolve '/./' and '/../' segments.
+	$absolute_path = preg_replace( '/\/\.\//', '/', $absolute_path );
+	$pattern = '/\/[^\/]+\/\.\.\//';
+	while ( preg_match( $pattern, $absolute_path ) ) {
+		$absolute_path = preg_replace( $pattern, '/', $absolute_path, 1 );
+	}
+
+	return get_home_url( null, $absolute_path );
 }
 
 /**
