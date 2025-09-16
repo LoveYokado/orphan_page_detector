@@ -4,7 +4,7 @@
 **Tags:** orphan pages, seo, maintenance, cleanup, pages  
 **Requires at least:** 5.0  
 **Tested up to:** 6.5  
-**Stable tag:** 0.9.0  
+**Stable tag:** 0.9.1
 **License:** GPLv2 or later  
 **License URI:** https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -43,6 +43,11 @@ This tool scans your entire site's content to identify all internal links and co
 ### 0.9.0
 
 - Initial release.
+
+### 0.9.1
+
+- Added Force HTTPS and HTTP modes
+- Added Detailed comments
 
 ## License
 
