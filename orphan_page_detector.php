@@ -126,14 +126,22 @@ function opd_display_page() {
 
 	// Get and sanitize filter settings from the URL query parameters.
 	// Nonce check for form submission.
+	// When settings are changed, clear the relevant transient cache.
 	if ( isset( $_GET['opd_filter_nonce'] ) && wp_verify_nonce( sanitize_key( $_GET['opd_filter_nonce'] ), 'opd_filter_settings' ) ) {
 		$redirect_key = isset( $_GET['opd_redirect_key'] ) ? sanitize_text_field( wp_unslash( $_GET['opd_redirect_key'] ) ) : 'redirect_url';
+		$protocol_mode = isset( $_GET['opd_protocol_mode'] ) ? sanitize_key( $_GET['opd_protocol_mode'] ) : 'none';
+
 		$old_redirect_key = get_option( 'opd_redirect_key', 'redirect_url' );
-		if ( $redirect_key !== $old_redirect_key ) {
+		$old_protocol_mode = get_option( 'opd_protocol_mode', 'none' );
+
+		if ( $redirect_key !== $old_redirect_key || $protocol_mode !== $old_protocol_mode ) {
+			// Settings have changed, so we need to clear the old cache.
 			$old_redirect_key_suffix = ! empty( $old_redirect_key ) ? '_' . sanitize_key( $old_redirect_key ) : '';
-			delete_transient( 'opd_unlinked_pages_pages_only' . $old_redirect_key_suffix );
-			delete_transient( 'opd_unlinked_pages_all' . $old_redirect_key_suffix );
+			$old_protocol_suffix = '_' . $old_protocol_mode;
+			delete_transient( 'opd_unlinked_pages_pages_only' . $old_redirect_key_suffix . $old_protocol_suffix ); // Clear cache for "pages only" mode.
+			delete_transient( 'opd_unlinked_pages_all' . $old_redirect_key_suffix . $old_protocol_suffix );       // Clear cache for "all" mode.
 			update_option( 'opd_redirect_key', $redirect_key );
+			update_option( 'opd_protocol_mode', $protocol_mode );
 		}
 	}
 	$settings = [
@@ -141,6 +149,7 @@ function opd_display_page() {
 		'posts_per_page' => isset( $_GET['opd_posts_per_page'] ) ? absint( $_GET['opd_posts_per_page'] ) : 20, // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 		'redirect_key'   => isset( $_GET['opd_redirect_key'] ) ? sanitize_text_field( wp_unslash( $_GET['opd_redirect_key'] ) ) : get_option( 'opd_redirect_key', 'redirect_url' ), // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 		'paged'          => isset( $_GET['paged'] ) ? absint( $_GET['paged'] ) : 1, // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		'protocol_mode'  => isset( $_GET['opd_protocol_mode'] ) ? sanitize_key( $_GET['opd_protocol_mode'] ) : get_option( 'opd_protocol_mode', 'none' ), // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 	];
 
 	?>
@@ -169,13 +178,27 @@ function opd_display_page() {
 				<input type="text" id="opd_redirect_key" name="opd_redirect_key" value="<?php echo esc_attr( $settings['redirect_key'] ); ?>" placeholder="e.g., redirect_url">
 				<p class="description"><?php esc_html_e( 'If you use a custom field for redirects, enter its key here.', 'orphan-page-detector' ); ?></p>
 			</div>
+			<div>
+				<label><?php esc_html_e( 'URL Protocol Unification:', 'orphan-page-detector' ); ?></label>
+				<fieldset>
+					<label><input type="radio" name="opd_protocol_mode" value="none" <?php checked( $settings['protocol_mode'], 'none' ); ?>> <?php esc_html_e( 'None (Default)', 'orphan-page-detector' ); ?></label><br>
+					<label><input type="radio" name="opd_protocol_mode" value="to_https" <?php checked( $settings['protocol_mode'], 'to_https' ); ?>> <?php esc_html_e( 'Force all URLs to HTTPS', 'orphan-page-detector' ); ?></label><br>
+					<label><input type="radio" name="opd_protocol_mode" value="to_http" <?php checked( $settings['protocol_mode'], 'to_http' ); ?>> <?php esc_html_e( 'Force all URLs to HTTP', 'orphan-page-detector' ); ?></label>
+				</fieldset>
+				<p class="description">
+					<?php
+					// translators: Explains the purpose of the URL protocol unification setting.
+					esc_html_e( 'Unify URL protocols (http/https) for comparison. This helps find orphans when links are mixed across protocols.', 'orphan-page-detector' );
+					?>
+				</p>
+			</div>
 			<?php submit_button( __( 'Apply', 'orphan-page-detector' ), 'secondary' ); ?>
 		</div>
 	</form>
 	<?php
 
 	// Get orphan pages. For large sites, consider caching this result using the Transients API.
-	$unlinked_pages = opd_get_unlinked_pages( $settings['exclude_posts'], $settings['redirect_key'] );
+	$unlinked_pages = opd_get_unlinked_pages( $settings['exclude_posts'], $settings['redirect_key'], $settings['protocol_mode'] );
 
 	opd_display_results_table( $unlinked_pages, $settings ); // Display the results.
 
@@ -187,13 +210,23 @@ function opd_display_page() {
  *
  * This function removes the port, query string, and fragment from a URL. It also
  * adds a trailing slash to paths that do not appear to be files (i.e., no extension).
- * @param string|null $url The URL to normalize.
+ *
+ * @param string|null $url           The URL to normalize.
+ * @param string      $protocol_mode Optional. How to handle the protocol. Accepts 'none', 'to_https', or 'to_http'. Default 'none'.
  * @return string|null The normalized URL, or null if the input is invalid.
  */
-function opd_normalize_url($url) {
+function opd_normalize_url($url, $protocol_mode = 'none') {
 	if (empty($url)) {
 		return null;
 	}
+
+	// Handle protocol unification before parsing.
+	if ( 'to_https' === $protocol_mode ) {
+		$url = preg_replace( '/^http:/i', 'https:', $url );
+	} elseif ( 'to_http' === $protocol_mode ) {
+		$url = preg_replace( '/^https:/i', 'http:', $url );
+	}
+
 
 	$parts = parse_url($url);
 	if (!isset($parts['scheme']) || !isset($parts['host'])) {
@@ -219,10 +252,11 @@ function opd_normalize_url($url) {
 /**
  * Retrieves a list of all published, public posts and/or pages.
  *
- * @param bool $exclude_posts Whether to exclude posts from the scan.
+ * @param bool   $exclude_posts Whether to exclude posts from the scan.
+ * @param string $protocol_mode How to handle the protocol for URL normalization.
  * @return array An associative array mapping normalized URL to post ID.
  */
-function opd_get_base_posts( $exclude_posts ) {
+function opd_get_base_posts( $exclude_posts, $protocol_mode = 'none' ) {
 	$post_types_to_scan = ['post', 'page'];
 	if ($exclude_posts) {
 		$post_types_to_scan = ['page'];
@@ -238,7 +272,7 @@ function opd_get_base_posts( $exclude_posts ) {
 	$base_posts = [];
 	if ($all_posts_query->have_posts()) {
 		foreach ($all_posts_query->posts as $post_id) {
-			$base_posts[opd_normalize_url(get_permalink($post_id))] = $post_id;
+			$base_posts[opd_normalize_url(get_permalink($post_id), $protocol_mode)] = $post_id;
 		}
 	}
 	wp_reset_postdata();
@@ -289,10 +323,11 @@ function opd_get_post_details( $post_id ) {
 /**
  * Scans all site content to find every internal link.
  *
- * @param string $redirect_key The custom field key for redirect URLs.
+ * @param string $redirect_key  The custom field key for redirect URLs.
+ * @param string $protocol_mode How to handle the protocol for URL normalization.
  * @return string[] An array of unique, normalized internal URLs found on the site.
  */
-function opd_get_linked_urls( $redirect_key = 'redirect_url' ) {
+function opd_get_linked_urls( $redirect_key = 'redirect_url', $protocol_mode = 'none' ) {
 	$redirect_key = ! empty( $redirect_key ) ? $redirect_key : 'redirect_url'; // Fallback
 	set_time_limit(300); // 5 minutes
 	$content_query = new WP_Query([
@@ -317,16 +352,16 @@ function opd_get_linked_urls( $redirect_key = 'redirect_url' ) {
 				$absolute_url = opd_relative_to_absolute_url( $url, get_permalink() );
 				
 				// If the URL is internal, add it to our list of linked URLs.
-				if (strpos(opd_normalize_url($absolute_url), opd_normalize_url(get_home_url())) === 0) {
-					$linked_urls[] = opd_normalize_url($absolute_url);
+				if (strpos(opd_normalize_url($absolute_url, $protocol_mode), opd_normalize_url(get_home_url(), $protocol_mode)) === 0) {
+					$linked_urls[] = opd_normalize_url($absolute_url, $protocol_mode);
 				}
 			}
 
 			// Also check for a redirect custom field and process it.
 			$redirect_url_value = get_post_meta(get_the_ID(), $redirect_key, true);
 			if (!empty($redirect_url_value)) {
-				$absolute_redirect_url = opd_relative_to_absolute_url( $redirect_url_value, get_permalink() );
-				$linked_urls[] = opd_normalize_url($absolute_redirect_url);
+				$absolute_redirect_url = opd_relative_to_absolute_url( $redirect_url_value, get_permalink(), $protocol_mode );
+				$linked_urls[] = opd_normalize_url($absolute_redirect_url, $protocol_mode);
 			}
 		}
 	}
@@ -337,8 +372,8 @@ function opd_get_linked_urls( $redirect_key = 'redirect_url' ) {
 	foreach ( $menus as $menu ) {
 		$menu_items = wp_get_nav_menu_items( $menu->term_id );
 		foreach ( $menu_items as $item ) {
-			$url = opd_normalize_url( $item->url );
-			if ( $url && strpos( $url, opd_normalize_url( get_home_url() ) ) === 0 ) {
+			$url = opd_normalize_url( $item->url, $protocol_mode );
+			if ( $url && strpos( $url, opd_normalize_url( get_home_url(), $protocol_mode ) ) === 0 ) {
 				$linked_urls[] = $url;
 			}
 		}
@@ -397,18 +432,22 @@ function opd_relative_to_absolute_url( $url, $base_url ) {
  * Detects orphan pages by comparing all posts/pages against all found internal links.
  * Results are cached in a transient to improve performance on subsequent loads.
  *
- * @param bool $exclude_posts Whether to exclude posts from the scan.
- * @param string $redirect_key The custom field key for redirect URLs.
+ * @param bool   $exclude_posts Whether to exclude posts from the scan.
+ * @param string $redirect_key  The custom field key for redirect URLs.
+ * @param string $protocol_mode How to handle the protocol for URL normalization.
  * @return array An associative array of orphan pages, mapping URL to post ID.
  */
-function opd_get_unlinked_pages( $exclude_posts, $redirect_key = 'redirect_url' ) {
+function opd_get_unlinked_pages( $exclude_posts, $redirect_key = 'redirect_url', $protocol_mode = 'none' ) {
+	// Create a unique transient key based on the current settings.
 	$redirect_key_suffix = ! empty( $redirect_key ) ? '_' . sanitize_key( $redirect_key ) : '';
-	$transient_key = 'opd_unlinked_pages_' . ($exclude_posts ? 'pages_only' : 'all') . $redirect_key_suffix;
+	$protocol_suffix = '_' . $protocol_mode;
+	$transient_key = 'opd_unlinked_pages_' . ($exclude_posts ? 'pages_only' : 'all') . $redirect_key_suffix . $protocol_suffix;
+
 	$unlinked_pages = get_transient($transient_key);
 
 	if (false === $unlinked_pages) {
-		$base_posts     = opd_get_base_posts( $exclude_posts );
-		$linked_urls    = opd_get_linked_urls( $redirect_key );
+		$base_posts     = opd_get_base_posts( $exclude_posts, $protocol_mode );
+		$linked_urls    = opd_get_linked_urls( $redirect_key, $protocol_mode );
 		$base_urls_keys = array_keys($base_posts);
 		$unlinked_urls  = array_diff($base_urls_keys, $linked_urls);
 
@@ -475,10 +514,11 @@ function opd_detect_orphan_pages( $is_csv_download = false ) {
 		'exclude_posts'  => isset( $_REQUEST['opd_exclude_posts'] ) && '1' === $_REQUEST['opd_exclude_posts'],
 		'posts_per_page' => isset( $_REQUEST['opd_posts_per_page'] ) ? absint( $_REQUEST['opd_posts_per_page'] ) : 20,
 		'redirect_key'   => isset( $_REQUEST['opd_redirect_key'] ) ? sanitize_text_field( wp_unslash( $_REQUEST['opd_redirect_key'] ) ) : 'redirect_url',
+		'protocol_mode'  => isset( $_REQUEST['opd_protocol_mode'] ) ? sanitize_key( $_REQUEST['opd_protocol_mode'] ) : 'none',
 	];
 
 	// Get orphan pages. For large sites, consider caching this result using the Transients API.
-	$unlinked_pages = opd_get_unlinked_pages( $settings['exclude_posts'], $settings['redirect_key'] );
+	$unlinked_pages = opd_get_unlinked_pages( $settings['exclude_posts'], $settings['redirect_key'], $settings['protocol_mode'] );
 
 	if ( $is_csv_download ) {
 		opd_generate_csv( $unlinked_pages );
@@ -551,6 +591,7 @@ function opd_display_results_table( $unlinked_pages, $settings ) {
 				<input type="hidden" name="action" value="opd_download_csv">
 				<input type="hidden" name="opd_exclude_posts" value="<?php echo $settings['exclude_posts'] ? '1' : '0'; ?>">
 				<input type="hidden" name="opd_redirect_key" value="<?php echo esc_attr( $settings['redirect_key'] ); ?>">
+				<input type="hidden" name="opd_protocol_mode" value="<?php echo esc_attr( $settings['protocol_mode'] ); ?>">
 				<?php submit_button( __( 'Download Results as CSV', 'orphan-page-detector' ), 'secondary' ); ?>
 			</form>
 		</div>
@@ -614,6 +655,7 @@ function opd_display_results_table( $unlinked_pages, $settings ) {
 						'opd_exclude_posts'  => $settings['exclude_posts'] ? '1' : '0',
 						'opd_posts_per_page' => $settings['posts_per_page'],
 						'opd_redirect_key'   => $settings['redirect_key'], // This might be redundant if we use the option.
+						'opd_protocol_mode'  => $settings['protocol_mode'],
 						'opd_filter_nonce'   => wp_create_nonce( 'opd_filter_settings' ),
 					], $base_url ),
 					'format' => '',
